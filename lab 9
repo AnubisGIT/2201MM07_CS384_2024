@@ -1,0 +1,119 @@
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill
+from datetime import datetime
+
+# Function to load dates from the 'python dates.txt' file dynamically
+def load_dates_from_file(file_path):
+    with open(file_path, 'r') as file:
+        file_content = file.read()
+    data_dict = {}
+    exec(file_content, data_dict)
+    classes_taken_dates = [datetime.strptime(date, "%d/%m/%Y") for date in data_dict['classes_taken_dates']]
+    return classes_taken_dates
+
+# Load dates
+classes_taken_dates = load_dates_from_file('/content/python dates.txt')
+
+# Load student list
+with open('/content/stud_list.txt', 'r') as file:
+    student_list = file.read().splitlines()
+
+# Load attendance records
+attendance_df = pd.read_csv('input_attendance.csv')
+attendance_df['Timestamp'] = pd.to_datetime(attendance_df['Timestamp'], format='%d/%m/%Y %H:%M:%S', errors='coerce')
+
+# Lenient Mode: If student gives 2 or more attendances in the first session, consider them present for both sessions
+def check_attendance_lenient(student, date, attendance_df):
+    student_attendance = attendance_df[attendance_df['Roll'] == student]
+    attendance_times = student_attendance['Timestamp']
+    
+    session_1_start = date.replace(hour=18, minute=0)
+    session_1_end = date.replace(hour=19, minute=0)
+    session_2_start = date.replace(hour=19, minute=0)
+    session_2_end = date.replace(hour=20, minute=0)
+
+    session_1_attendance = attendance_times[(attendance_times >= session_1_start) & (attendance_times < session_1_end)].count()
+    session_2_attendance = attendance_times[(attendance_times >= session_2_start) & (attendance_times < session_2_end)].count()
+
+    if session_1_attendance >= 2:  # If 2 or more attendances in session 1, count as Full for both sessions
+        return 2
+    elif session_1_attendance > 0 and session_2_attendance == 0:  # Only session 1 attended
+        return 1
+    elif session_1_attendance == 0 and session_2_attendance > 0:  # Only session 2 attended
+        return 1
+    elif session_1_attendance > 0 and session_2_attendance > 0:  # Attended both
+        return 2
+    else:
+        return 0  # Absent
+
+# Proxy counting logic: Proxy is counted if attendance is marked after 8:00 PM
+def count_proxies_lenient(student, date, attendance_df):
+    student_attendance = attendance_df[attendance_df['Roll'] == student]
+    attendance_times = student_attendance['Timestamp']
+    
+    session_end = date.replace(hour=20, minute=0)
+    day_end = date.replace(hour=23, minute=59)
+
+    proxies = attendance_times[(attendance_times > session_end) & (attendance_times < day_end)].count()
+
+    return proxies
+
+# Function to generate attendance sheet for lenient mode
+def generate_attendance_sheet_lenient():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Attendance Record"
+
+    fill_partial = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")  # Yellow for partial attendance
+    fill_full = PatternFill(start_color="00FF00", end_color="00FF00", fill_type="solid")    # Green for full attendance
+    fill_proxy = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")    # Red for proxies
+
+    # Header
+    ws.append(['Roll'] + [date.strftime('%Y-%m-%d') for date in classes_taken_dates] +
+               ['Total count of dates', 'Total Attendance Marked', 'Total Attendance Allowed', 'Proxy'])
+
+    for student in student_list:
+        row = [student]
+        total_attendance = 0
+        total_proxies = 0
+        
+        for lecture_date in classes_taken_dates:
+            attendance_status = check_attendance_lenient(student, lecture_date, attendance_df)
+            proxy_count = count_proxies_lenient(student, lecture_date, attendance_df)
+            
+            row.append(attendance_status)
+            total_attendance += attendance_status
+            total_proxies += proxy_count
+
+        total_count_of_dates = len(classes_taken_dates)
+        total_attendance_marked = total_attendance
+        total_attendance_allowed = total_count_of_dates * 2  # Two sessions per day
+
+        row.extend([total_count_of_dates, total_attendance_marked, total_attendance_allowed, total_proxies])
+        ws.append(row)
+
+    # Apply conditional formatting to attendance cells
+    for row in ws.iter_rows(min_row=2, min_col=2, max_col=len(classes_taken_dates) + 1):
+        for cell in row:
+            if cell.value == 1:
+                cell.fill = fill_partial  # Partial attendance (yellow)
+            elif cell.value == 2:
+                cell.fill = fill_full     # Full attendance (green)
+            # No color for 0 attendance
+
+    # Apply conditional formatting to proxy cells (only if proxy > 0)
+    proxy_col_index = ws.max_column  # Proxy is the last column
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=proxy_col_index, max_col=proxy_col_index):
+        for cell in row:
+            if cell.value > 0:
+                cell.fill = fill_proxy  # Highlight proxies in red
+            else:
+                cell.fill = PatternFill(fill_type="none")  # Reset the fill if proxy is 0
+
+    wb.save("output_attendance_lenient_with_proxies_corrected.xlsx")
+
+# Generate the attendance sheet for lenient mode with corrected proxy logic
+generate_attendance_sheet_lenient()
+
+print("Attendance sheet for Lenient Mode (with corrected proxy color logic) generated successfully!")
